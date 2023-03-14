@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package proto;
+
+option go_package = ".;web";
+
+service Web {
+	rpc Write (Request) returns (Response) {}
+}
+
+message BasicAuth {
+	string username = 1;
+	string password = 2;
+}
+
+message CoinbaseAuth {
+	string key = 1;
+	string secret = 2;
+	string passphrase = 3;
+}
+
+message Auth {
+	oneof auth {
+		BasicAuth basic = 1;
+		CoinbaseAuth coinbase = 2;
+	}
+}
+
+enum WriteType {
+	// CSV writes the response as a CSV file.
+	CSV = 0;
+
+	// MongoDB writes the response to a MongoDB database.
+	MONGO = 1;
+}
+
+message Writer {
+	WriteType type = 1;
+	string dir = 2;
+	string database = 3;
+	string connString = 4;
+}
+
+message WriteRequest {
+	string method = 1;
+	string url = 2;
+
+	// Writers are the writers to use for the transporting the response
+	// to local storage.
+	repeated Writer writers = 4;
+
+	// Auth is the request-specific auth, if blank the default global auth
+	// defined on the web.Request will be used.
+	Auth auth = 5;
+
+
+	// Table is the table to write the response to.
+	string table = 6;
+}
+
+message Response {}
+
+message Request {
+	repeated WriteRequest requests = 1;
+
+	// Writers are the writers to use for the transporting the response
+	// to local storage. This is the default for all write requests and
+	// can be overridden on a per-write request basis.
+	repeated Writer writers = 2;
+
+	// Auth is the global auth for all requests, it can be overridden by the
+	// individual requests.
+	Auth auth = 3;
+}
