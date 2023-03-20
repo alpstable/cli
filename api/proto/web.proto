@@ -38,12 +38,24 @@ message Writer {
 	WriteType type = 1;
 	string dir = 2;
 	string database = 3;
-	string connString = 4;
+	string conn_string = 4;
+}
+
+message CSVConfig {
+	string file = 1;
+}
+
+message MongoConfig {
+	string collection = 1;
+	repeated string index = 2;
 }
 
 message WriteRequest {
 	string method = 1;
 	string url = 2;
+
+	// QueryParams are the query parameters to use for the HTTP request.
+	map<string, string> query_params = 3;
 
 	// Writers are the writers to use for the transporting the response
 	// to local storage.
@@ -53,9 +65,11 @@ message WriteRequest {
 	// defined on the web.Request will be used.
 	Auth auth = 5;
 
+	// CSV is the CSV configuration for the request.
+	CSVConfig csv = 6;
 
-	// Table is the table to write the response to.
-	string table = 6;
+	// Mongo is the MongoDB configuration for the request.
+	MongoConfig mongo = 7;
 }
 
 message Response {}

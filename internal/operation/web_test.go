@@ -1,3 +1,11 @@
+// Copyright 2023 The Gidari CLI Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+
 package operation
 
 import (
@@ -25,8 +33,7 @@ func TestParseWriteRequestTable(t *testing.T) {
 		{
 			name: "table name is empty in WriteRequest w ext",
 			req: &web.WriteRequest{
-				Table: "",
-				Url:   "https://example.com/path/to/table",
+				Url: "https://example.com/path/to/table",
 			},
 			ext:      "csv",
 			expected: "table.csv",
@@ -34,8 +41,7 @@ func TestParseWriteRequestTable(t *testing.T) {
 		{
 			name: "table name is empty in WriteRequest wo ext",
 			req: &web.WriteRequest{
-				Table: "",
-				Url:   "https://example.com/path/to/table",
+				Url: "https://example.com/path/to/table",
 			},
 			ext:      "",
 			expected: "table",
@@ -43,8 +49,10 @@ func TestParseWriteRequestTable(t *testing.T) {
 		{
 			name: "table name is specified in WriteRequest w ext",
 			req: &web.WriteRequest{
-				Table: "mytable",
-				Url:   "https://example.com/path/to/other/table",
+				Csv: &web.CSVConfig{
+					File: "mytable",
+				},
+				Url: "https://example.com/path/to/other/table",
 			},
 			ext:      "csv",
 			expected: "mytable.csv",
@@ -52,8 +60,10 @@ func TestParseWriteRequestTable(t *testing.T) {
 		{
 			name: "table name is specified in WriteRequest wo ext",
 			req: &web.WriteRequest{
-				Table: "mytable",
-				Url:   "https://example.com/path/to/other/table",
+				Csv: &web.CSVConfig{
+					File: "mytable",
+				},
+				Url: "https://example.com/path/to/other/table",
 			},
 			ext:      "",
 			expected: "mytable",
@@ -61,8 +71,7 @@ func TestParseWriteRequestTable(t *testing.T) {
 		{
 			name: "URL parsing fails",
 			req: &web.WriteRequest{
-				Table: "",
-				Url:   "::invalidurl",
+				Url: "::invalidurl",
 			},
 			ext:           "csv",
 			expected:      "",
@@ -71,8 +80,7 @@ func TestParseWriteRequestTable(t *testing.T) {
 		{
 			name: "extension is empty",
 			req: &web.WriteRequest{
-				Table: "",
-				Url:   "https://example.com/path/to/table",
+				Url: "https://example.com/path/to/table",
 			},
 			ext:      "",
 			expected: "table",
@@ -82,8 +90,14 @@ func TestParseWriteRequestTable(t *testing.T) {
 		t.Run(tcase.name, func(t *testing.T) {
 			t.Parallel()
 
-			table, err := parseWriteRequestTable(tcase.req, tcase.ext)
+			req := tcase.req
 
+			var file string
+			if tcase.req.Csv != nil {
+				file = tcase.req.Csv.File
+			}
+
+			table, err := parseWriteRequestTable(req, file, tcase.ext)
 			if tcase.expectedError && err == nil {
 				t.Fatalf("expected error, but got nil")
 			}
@@ -132,7 +146,7 @@ func TestNewAuthRoundTrip(t *testing.T) {
 		t.Run(tcase.name, func(t *testing.T) {
 			t.Parallel()
 
-			roundTripFunc := newAuthRoundTrip(tcase.wa)
+			roundTripFunc := newAuthRoundTrip(tcase.wa) //nolint:bodyclose
 
 			if roundTripFunc == nil && tcase.expected != nil {
 				t.Errorf("Expected a non-nil round trip function, but got nil")
@@ -193,9 +207,8 @@ func TestNewListWriterCSV(t *testing.T) {
 
 		t.Run(tcase.name, func(t *testing.T) {
 			t.Parallel()
-			ctx := context.Background()
 
-			_, closeLW, err := newListWriterCSV(ctx, tcase.writer, csvConfig{
+			_, closeLW, err := newListWriterCSV(tcase.writer, csvConfig{
 				filename: tcase.filename,
 			})
 
@@ -213,8 +226,8 @@ func TestNewListWriterCSV(t *testing.T) {
 func TestHTTPRequestBuilder(t *testing.T) {
 	t.Parallel()
 
-	var testError1 = errors.New("test error 1")
-	var testError2 = errors.New("test error 2")
+	testError1 := errors.New("test error 1")
+	testError2 := errors.New("test error 2")
 
 	t.Run("close", func(t *testing.T) {
 		t.Parallel()
@@ -271,7 +284,7 @@ func TestHTTPRequestBuilder(t *testing.T) {
 			t.Run(tcase.name, func(t *testing.T) {
 				t.Parallel()
 
-				h := &httpRequestBuilder{
+				bldr := &httpRequestBuilder{
 					closer: make(chan func(), len(tcase.closers)),
 					errs:   make(chan error, len(tcase.errs)),
 				}
@@ -279,23 +292,23 @@ func TestHTTPRequestBuilder(t *testing.T) {
 				closeCounter := 0
 
 				go func() {
-					defer close(h.closer)
-					defer close(h.errs)
+					defer close(bldr.closer)
+					defer close(bldr.errs)
 
-					for _ = range tcase.closers {
-						h.closer <- func() {
+					for range tcase.closers {
+						bldr.closer <- func() {
 							closeCounter++
 						}
 					}
 
 					for _, err := range tcase.errs {
 						if err != nil {
-							h.errs <- err
+							bldr.errs <- err
 						}
 					}
 				}()
 
-				if err := h.close(); err != nil {
+				if err := bldr.close(); err != nil {
 					if !errors.Is(err, tcase.expectedError) {
 						t.Fatalf("unexpected error: %v", err)
 					}
@@ -341,18 +354,18 @@ func TestHTTPRequestBuilder(t *testing.T) {
 			t.Run(tcase.name, func(t *testing.T) {
 				t.Parallel()
 
-				h := &httpRequestBuilder{
+				bldr := &httpRequestBuilder{
 					writeRequest: &web.WriteRequest{},
 				}
 
 				if tcase.localAuth != nil {
-					h.writeRequest.Auth = tcase.localAuth
+					bldr.writeRequest.Auth = tcase.localAuth
 				}
 
-				h.setAuth(tcase.globalAuth)
+				bldr.setAuth(tcase.globalAuth)
 
-				if !reflect.DeepEqual(h.auth, tcase.want) {
-					t.Fatalf("unexpected auth: %v", h.auth)
+				if !reflect.DeepEqual(bldr.auth, tcase.want) {
+					t.Fatalf("unexpected auth: %v", bldr.auth)
 				}
 			})
 		}
@@ -405,18 +418,18 @@ func TestHTTPRequestBuilder(t *testing.T) {
 			t.Run(tcase.name, func(t *testing.T) {
 				t.Parallel()
 
-				h := &httpRequestBuilder{
+				bldr := &httpRequestBuilder{
 					writeRequest: &web.WriteRequest{},
 				}
 
 				if tcase.localWriters != nil {
-					h.writeRequest.Writers = tcase.localWriters
+					bldr.writeRequest.Writers = tcase.localWriters
 				}
 
-				h.setWriters(tcase.globalWriters)
+				bldr.setWriters(tcase.globalWriters)
 
-				if !reflect.DeepEqual(h.writers, tcase.want) {
-					t.Fatalf("unexpected writers: %v", h.writers)
+				if !reflect.DeepEqual(bldr.writers, tcase.want) {
+					t.Fatalf("unexpected writers: %v", bldr.writers)
 				}
 			})
 		}
@@ -457,7 +470,7 @@ func TestHTTPRequestBuilder(t *testing.T) {
 					writeRequest:  tcase.wreq,
 				}
 
-				<-bldr.build()
+				<-bldr.build(ctx)
 				if !errors.Is(bldr.close(), tcase.expectedError) {
 					t.Fatalf("unexpected error: %v", bldr.close())
 				}

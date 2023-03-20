@@ -1,3 +1,11 @@
+// Copyright 2023 The Gidari CLI Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+
 package operation
 
 import (
@@ -10,6 +18,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/alpstable/cli/api/service/web"
@@ -19,6 +28,7 @@ import (
 	"github.com/alpstable/mongopb"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"google.golang.org/grpc"
@@ -29,12 +39,11 @@ import (
 // path of the URL. If an extension is provided, it is appended to the table
 // name. The final table name is returned along with a possible error if URL
 // parsing fails.
-func parseWriteRequestTable(wr *web.WriteRequest, ext string) (string, error) {
-	table := wr.Table
+func parseWriteRequestTable(wr *web.WriteRequest, table string, ext string) (string, error) {
 	if table == "" {
 		u, err := url.Parse(wr.Url)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("failed to parse URL: %w", err)
 		}
 
 		table = path.Base(u.Path)
@@ -79,7 +88,7 @@ type csvConfig struct {
 // for writing CSV records to the output file. The cleanup function must be
 // called when writing is complete to flush the csv.Writer buffer to the output
 // file and close the file handle. If an error occurs during cleanup, it panics.
-func newListWriterCSV(ctx context.Context, writer *web.Writer, cfg csvConfig) (*listWriter, func(), error) {
+func newListWriterCSV(writer *web.Writer, cfg csvConfig) (*listWriter, func(), error) {
 	if cfg.filename == "" {
 		return nil, nil, fmt.Errorf("filename is required to create a CSV writer")
 	}
@@ -91,13 +100,22 @@ func newListWriterCSV(ctx context.Context, writer *web.Writer, cfg csvConfig) (*
 
 	loc := filepath.Join(database, cfg.filename)
 
-	out, err := os.Create(loc)
+	// Make sure the filename ends with .csv to avoid vulnerabilities.
+	if !strings.HasSuffix(loc, ".csv") {
+		return nil, nil, fmt.Errorf("filename must end with .csv")
+	}
+
+	// Santize the filepath before using it.
+	loc = filepath.Clean(loc)
+
+	out, err := os.Create(loc) //nolint:gosec
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to create output file: %w", err)
 	}
 
 	// Create a new CSV Writer for the output file.
 	csvWriter := csv.NewWriter(out)
+
 	return newListWriter(csvpb.NewListWriter(csvWriter)), func() {
 		csvWriter.Flush()
 
@@ -119,13 +137,17 @@ func newMongoClientPool() *mongoClientPool {
 	}
 }
 
-func (mcp *mongoClientPool) close() {
+func (mcp *mongoClientPool) close(ctx context.Context) error {
 	mcp.mu.Lock()
 	defer mcp.mu.Unlock()
 
 	for _, client := range mcp.clients {
-		client.Disconnect(context.Background())
+		if err := client.Disconnect(ctx); err != nil {
+			return fmt.Errorf("failed to disconnect from MongoDB: %w", err)
+		}
 	}
+
+	return nil
 }
 
 func (mcp *mongoClientPool) getClient(ctx context.Context, connStr string) (*mongo.Client, error) {
@@ -137,18 +159,17 @@ func (mcp *mongoClientPool) getClient(ctx context.Context, connStr string) (*mon
 		return client, nil
 	}
 
-	var err error
-	client, err = mongo.NewClient(options.Client().ApplyURI(connStr))
+	client, err := mongo.NewClient(options.Client().ApplyURI(connStr))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create MongoDB client: %w", err)
 	}
 
 	if err := client.Connect(ctx); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to connect to MongoDB: %w", err)
 	}
 
 	if err := client.Ping(ctx, nil); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to ping MongoDB: %w", err)
 	}
 
 	mcp.clients[connStr] = client
@@ -157,8 +178,26 @@ func (mcp *mongoClientPool) getClient(ctx context.Context, connStr string) (*mon
 }
 
 type mongoConfig struct {
-	pool *mongoClientPool
-	coll string
+	pool  *mongoClientPool
+	coll  string
+	index *mongo.IndexModel
+}
+
+// parseMongoIndexModel parses a list of strings into a mongo.IndexModel.
+func parseMongoIndexModel(index []string) *mongo.IndexModel {
+	if len(index) == 0 {
+		return nil
+	}
+
+	keys := make(bson.D, len(index))
+	for i, key := range index {
+		keys[i] = bson.E{Key: key, Value: 1}
+	}
+
+	return &mongo.IndexModel{
+		Keys:    keys,
+		Options: options.Index().SetUnique(true),
+	}
 }
 
 // addWebWriterMongo will set the HTTP Request and writer on the service for
@@ -166,18 +205,28 @@ type mongoConfig struct {
 func addWebWriterMongo(ctx context.Context, w *web.Writer, cfg mongoConfig) (*listWriter, func(), error) {
 	connStr := w.GetConnString()
 	if connStr == "" {
-		return nil, nil, fmt.Errorf("connection string is required to create a MongoDB writer")
+		return nil, nil, fmt.Errorf("connection string is required to create a mongodb writer")
 	}
 
 	client, err := cfg.pool.getClient(ctx, connStr)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to create mongodb client: %w", err)
 	}
 
 	database := w.GetDatabase()
 
 	coll := client.Database(database).Collection(cfg.coll)
-	return newListWriter(mongopb.NewListWriter(coll)), func() {}, nil
+	lwriter := mongopb.NewListWriter(coll)
+
+	// Create an index if one was provided and it is not empty.
+	if cfg.index != nil && cfg.index.Keys != nil {
+		_, err := coll.Indexes().CreateOne(ctx, *cfg.index)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create mongodb index: %w", err)
+		}
+	}
+
+	return newListWriter(lwriter), func() {}, nil
 }
 
 // httpRequestBuilder will build a gidari HTTP request from a web.WriteRequest.
@@ -206,9 +255,10 @@ func (bldr *httpRequestBuilder) close() error {
 	}()
 
 	var err error
+
 	for cerr := range bldr.errs {
 		if cerr != nil {
-			err = cerr
+			err = fmt.Errorf("failed to build HTTP request: %w", cerr)
 		}
 	}
 
@@ -243,11 +293,12 @@ func (bldr *httpRequestBuilder) setWriters(globWriters []*web.Writer) *httpReque
 
 // build builds a gidari HTTP request from the builder's write request and
 // returns a channel that will be closed when the request has been built.
-func (bldr *httpRequestBuilder) build() <-chan struct{} {
+func (bldr *httpRequestBuilder) build(ctx context.Context) <-chan struct{} {
 	bldr.errs = make(chan error, len(bldr.writers))
 	bldr.closer = make(chan func(), len(bldr.writers))
 
 	done := make(chan struct{}, 1)
+
 	go func() {
 		defer close(bldr.errs)
 		defer close(bldr.closer)
@@ -258,15 +309,19 @@ func (bldr *httpRequestBuilder) build() <-chan struct{} {
 		}
 
 		opts := make([]gidari.RequestOption, len(bldr.writers)+1)
-		opts[0] = gidari.WithAuth(newAuthRoundTrip(bldr.auth))
+		opts[0] = gidari.WithAuth(newAuthRoundTrip(bldr.auth)) //nolint:bodyclose
 
 		wreq := bldr.writeRequest
-		ctx := context.Background()
 
 		for i, writer := range bldr.writers {
 			switch writer.GetType() {
 			case web.WriteType_CSV:
-				fn, err := parseWriteRequestTable(wreq, "csv")
+				var table string
+				if csv := wreq.GetCsv(); csv != nil {
+					table = wreq.Csv.GetFile()
+				}
+
+				fileName, err := parseWriteRequestTable(wreq, table, "csv")
 				if err != nil {
 					bldr.errs <- err
 
@@ -274,10 +329,10 @@ func (bldr *httpRequestBuilder) build() <-chan struct{} {
 				}
 
 				cfg := csvConfig{
-					filename: fn,
+					filename: fileName,
 				}
 
-				lw, c, err := newListWriterCSV(ctx, writer, cfg)
+				listW, c, err := newListWriterCSV(writer, cfg)
 				if c != nil {
 					bldr.closer <- c
 				}
@@ -288,9 +343,19 @@ func (bldr *httpRequestBuilder) build() <-chan struct{} {
 					return
 				}
 
-				opts[i+1] = gidari.WithWriter(lw.glw)
+				opts[i+1] = gidari.WithWriters(listW.glw)
 			case web.WriteType_MONGO:
-				coll, err := parseWriteRequestTable(wreq, "")
+				var (
+					collName string
+					index    []string
+				)
+
+				if mongo := wreq.GetMongo(); mongo != nil {
+					collName = wreq.Mongo.GetCollection()
+					index = wreq.Mongo.GetIndex()
+				}
+
+				coll, err := parseWriteRequestTable(wreq, collName, "")
 				if err != nil {
 					bldr.errs <- err
 
@@ -298,11 +363,12 @@ func (bldr *httpRequestBuilder) build() <-chan struct{} {
 				}
 
 				cfg := mongoConfig{
-					pool: bldr.mongoClientPool,
-					coll: coll,
+					pool:  bldr.mongoClientPool,
+					coll:  coll,
+					index: parseMongoIndexModel(index),
 				}
 
-				lw, c, err := addWebWriterMongo(ctx, writer, cfg)
+				listW, c, err := addWebWriterMongo(ctx, writer, cfg)
 				if c != nil {
 					bldr.closer <- c
 				}
@@ -313,17 +379,24 @@ func (bldr *httpRequestBuilder) build() <-chan struct{} {
 					return
 				}
 
-				opts[i+1] = gidari.WithWriter(lw.glw)
+				opts[i+1] = gidari.WithWriters(listW.glw)
 			}
 		}
 
-		wr := bldr.writeRequest
-		if wr == nil {
+		if wreq == nil {
 			return
 		}
 
 		// Create the HTTP Request.
-		httpReq, _ := http.NewRequest(wr.Method, wr.Url, nil)
+		httpReq, _ := http.NewRequestWithContext(ctx, wreq.Method, wreq.Url, nil)
+
+		// Add th query params to the HTTP request.
+		query := httpReq.URL.Query()
+		for key, value := range wreq.GetQueryParams() {
+			query.Add(key, value)
+		}
+
+		httpReq.URL.RawQuery = query.Encode()
 
 		// Add the request options to the service.
 		gidReq := gidari.NewHTTPRequest(httpReq, opts...)
@@ -346,7 +419,7 @@ type httpServiceBuilder struct {
 func newHTTPServiceBuilder(ctx context.Context, req *web.Request) (*httpServiceBuilder, error) {
 	svc, err := gidari.NewService(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create service: %w", err)
 	}
 
 	bldr := &httpServiceBuilder{
@@ -359,21 +432,26 @@ func newHTTPServiceBuilder(ctx context.Context, req *web.Request) (*httpServiceB
 
 func (bldr *httpServiceBuilder) close() error {
 	var err error
+
 	for closer := range bldr.closers {
 		if cerr := closer(); cerr != nil {
-			err = cerr
+			err = fmt.Errorf("failed to HTTP service builder close: %w", cerr)
 		}
 	}
 
 	return err
 }
 
-func (bldr *httpServiceBuilder) build() <-chan struct{} {
+func (bldr *httpServiceBuilder) build(ctx context.Context) <-chan struct{} {
 	svc := bldr.gidariService
 	req := bldr.req
 
 	mongoClientPool := newMongoClientPool()
-	defer mongoClientPool.close()
+	defer func() {
+		if err := mongoClientPool.close(ctx); err != nil {
+			panic(err)
+		}
+	}()
 
 	writeRequests := req.GetRequests()
 
@@ -393,7 +471,7 @@ func (bldr *httpServiceBuilder) build() <-chan struct{} {
 
 			done <- <-reqBldr.setAuth(req.GetAuth()).
 				setWriters(req.GetWriters()).
-				build()
+				build(ctx)
 
 			bldr.closers <- reqBldr.close
 		}
@@ -420,7 +498,7 @@ func (svr *webServer) Write(ctx context.Context, req *web.Request) (*web.Respons
 		return nil, err
 	}
 
-	for range bldr.build() {
+	for range bldr.build(ctx) {
 	}
 
 	defer func() {
@@ -431,7 +509,7 @@ func (svr *webServer) Write(ctx context.Context, req *web.Request) (*web.Respons
 
 	// Execute the service.
 	if err := bldr.gidariService.HTTP.Upsert(ctx); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to execute service: %w", err)
 	}
 
 	return &web.Response{}, nil

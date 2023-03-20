@@ -6,6 +6,8 @@ replace github.com/alpstable/gidari => /Users/prestonvasquez/Developer/gidari
 
 replace github.com/alpstable/csvpb => /Users/prestonvasquez/Developer/csvpb
 
+replace github.com/alpstable/mongopb => /Users/prestonvasquez/Developer/mongopb
+
 require (
 	github.com/alpstable/csvpb v0.2.0
 	github.com/alpstable/gidari v0.2.0
