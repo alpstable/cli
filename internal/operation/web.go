@@ -508,7 +508,7 @@ func (svr *webServer) Write(ctx context.Context, req *web.Request) (*web.Respons
 	}()
 
 	// Execute the service.
-	if err := bldr.gidariService.HTTP.Upsert(ctx); err != nil {
+	if err := bldr.gidariService.HTTP.Store(ctx); err != nil {
 		return nil, fmt.Errorf("failed to execute service: %w", err)
 	}
 

@@ -1,5 +1,7 @@
 github.com/alpstable/csvpb v0.2.0 h1:xKeXwyqovi/KGb2vi5aPEBL5jIIJlWlL8kpjhQGCQh0=
 github.com/alpstable/csvpb v0.2.0/go.mod h1:dLurpArSH+3LBUEPxUJuhIBG/+hBSG0GhRAa8lkPJTg=
+github.com/alpstable/gidari v0.3.0 h1:Azn9gzJ/5sQuc3QDvDBlbMav6ZqMFvH5/R1fVxBcsfM=
+github.com/alpstable/gidari v0.3.0/go.mod h1:FVKT8BLl5pXzpUUVCWYXKIXCNUEOK25vPi9/g0hO5bo=
 github.com/alpstable/mongopb v0.1.1 h1:Us1WlV+lUSGcU4GpJvgOlAE3MF9g9PGP1eisAIFS05Y=
 github.com/alpstable/mongopb v0.1.1/go.mod h1:PAjJlVu8lLWFGAi9uvVz1uQHwse809BzuFwC2KOQcbg=
 github.com/cpuguy83/go-md2man/v2 v2.0.2/go.mod h1:tgQtvFlXSQOSOSIRvRPT7W67SCa46tRHOmNcaadrF8o=

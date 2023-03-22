@@ -2,15 +2,9 @@ module github.com/alpstable/cli
 
 go 1.19
 
-replace github.com/alpstable/gidari => /Users/prestonvasquez/Developer/gidari
-
-replace github.com/alpstable/csvpb => /Users/prestonvasquez/Developer/csvpb
-
-replace github.com/alpstable/mongopb => /Users/prestonvasquez/Developer/mongopb
-
 require (
 	github.com/alpstable/csvpb v0.2.0
-	github.com/alpstable/gidari v0.2.0
+	github.com/alpstable/gidari v0.3.0
 	github.com/alpstable/mongopb v0.1.1
 	github.com/sirupsen/logrus v1.9.0
 	github.com/spf13/cobra v1.6.1
